@@ -1,0 +1,21 @@
+# General
+.DS_Store
+.env
+.env.local
+.env.*.local
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Firebase
+.firebase/
+firebase-debug.log*
+
+# Project specific
+whatsapp-bot/dist/
+whatsapp-bot/.env
+whatsapp-bot/node_modules/
+.agent/
