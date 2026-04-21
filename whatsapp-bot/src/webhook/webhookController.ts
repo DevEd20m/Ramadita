@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { ProcessIncomingMessageUseCase } from '../use-cases/ProcessIncomingMessageUseCase';
+import { logger } from '../utils/logger';
 
 export class WebhookController {
   constructor(
@@ -15,6 +16,10 @@ export class WebhookController {
     if (mode === 'subscribe' && token === this.verifyToken) {
       res.status(200).send(challenge);
     } else {
+      logger.warn('Rejected webhook verification request', {
+        mode,
+        tokenMatches: token === this.verifyToken,
+      });
       res.sendStatus(403);
     }
   };
@@ -23,17 +28,50 @@ export class WebhookController {
     // Immediate 200 OK
     res.sendStatus(200);
 
+    const requestContext = {
+      method: req.method,
+      path: req.path,
+      requestId: req.get('x-request-id'),
+      traceContext: req.get('x-cloud-trace-context'),
+    };
+
     // Deferred background work
     try {
-      const body = req.body;
-      if (body.entry && body.entry[0].changes && body.entry[0].changes[0] && body.entry[0].changes[0].value.messages && body.entry[0].changes[0].value.messages[0]) {
-        const phoneNumber = body.entry[0].changes[0].value.messages[0].from;
-        const msgBody = body.entry[0].changes[0].value.messages[0].text.body;
+      const message = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-        this.processMessageUseCase.execute(phoneNumber, msgBody).catch(console.error);
+      if (!message) {
+        logger.info('Webhook payload did not contain a message', requestContext);
+        return;
       }
-    } catch (err) {
-      console.error('Error handling webhook payload', err);
+
+      if (message.type !== 'text' || typeof message.text?.body !== 'string') {
+        logger.warn('Skipping non-text webhook message', {
+          ...requestContext,
+          messageType: message.type,
+          from: message.from,
+        });
+        return;
+      }
+
+      const phoneNumber = message.from;
+      const msgBody = message.text.body;
+
+      if (!phoneNumber) {
+        logger.warn('Webhook message missing sender phone number', {
+          ...requestContext,
+        });
+        return;
+      }
+
+      void this.processMessageUseCase.execute(phoneNumber, msgBody).catch((error) => {
+        logger.error('Failed to process webhook message', error, {
+          ...requestContext,
+          phoneNumber,
+          messageType: message.type,
+        });
+      });
+    } catch (error) {
+      logger.error('Error handling webhook payload', error, requestContext);
     }
   };
 }

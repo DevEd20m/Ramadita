@@ -45,10 +45,24 @@ const OpenAIService_1 = require("./interface-adapters/gateways/OpenAIService");
 const WhatsAppService_1 = require("./interface-adapters/gateways/WhatsAppService");
 const SessionStore_1 = require("./interface-adapters/gateways/SessionStore");
 const ProcessIncomingMessageUseCase_1 = require("./use-cases/ProcessIncomingMessageUseCase");
+const AppError_1 = require("./errors/AppError");
+const logger_1 = require("./utils/logger");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const admin = __importStar(require("firebase-admin"));
+// Inicialización de Firebase Admin para acceso a Firestore
+if (admin.apps.length === 0) {
+    admin.initializeApp();
+}
 const app = (0, express_1.default)();
 app.use(express_1.default.json());
+app.use((req, _res, next) => {
+    logger_1.logger.info('Incoming request', {
+        method: req.method,
+        path: req.path,
+    });
+    next();
+});
 const menuPath = path.join(__dirname, '../assets/menu.txt');
 const menuText = fs.existsSync(menuPath) ? fs.readFileSync(menuPath, 'utf8') : 'Menú no encontrado.';
 const sessionStore = new SessionStore_1.SessionStore();
@@ -56,9 +70,27 @@ const openaiService = new OpenAIService_1.OpenAIService(menuText);
 const whatsappService = new WhatsAppService_1.WhatsAppService();
 const processUseCase = new ProcessIncomingMessageUseCase_1.ProcessIncomingMessageUseCase(openaiService, whatsappService, sessionStore);
 const https_1 = require("firebase-functions/v2/https");
-const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN || 'my_verify_token';
+const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN;
+if (!verifyToken) {
+    throw new AppError_1.ConfigurationError('Missing WhatsApp verify token', {
+        envVar: 'WHATSAPP_VERIFY_TOKEN',
+    });
+}
 const webhookController = new webhookController_1.WebhookController(verifyToken, processUseCase);
 const webhookRouter = (0, webhookRouter_1.WebhookRouter)(webhookController);
 app.use('/webhook', webhookRouter);
+app.use((error, req, res, next) => {
+    logger_1.logger.error('Unhandled Express error', error, {
+        method: req.method,
+        path: req.path,
+    });
+    if (res.headersSent) {
+        next(error);
+        return;
+    }
+    res.status(500).json({
+        error: 'Internal server error',
+    });
+});
 // Exportamos "api" que será la Cloud Function encargada de recibir las peticiones
 exports.api = (0, https_1.onRequest)(app);

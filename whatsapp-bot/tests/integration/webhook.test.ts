@@ -7,14 +7,24 @@ import { OpenAIService } from '../../src/interface-adapters/gateways/OpenAIServi
 import { WhatsAppService } from '../../src/interface-adapters/gateways/WhatsAppService';
 import { SessionStore } from '../../src/interface-adapters/gateways/SessionStore';
 
-// Mock dependencies
+// Mock external dependencies so no real Firebase / OpenAI / WhatsApp calls are made
 jest.mock('../../src/interface-adapters/gateways/OpenAIService');
 jest.mock('../../src/interface-adapters/gateways/WhatsAppService');
+jest.mock('../../src/interface-adapters/gateways/SessionStore');
+jest.mock('../../src/utils/logger', () => ({
+  logger: {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  },
+}));
 
 describe('Webhook Integration', () => {
   let app: express.Express;
   let whatsappServiceMock: jest.Mocked<WhatsAppService>;
   let openaiServiceMock: jest.Mocked<OpenAIService>;
+  let sessionStoreMock: jest.Mocked<SessionStore>;
 
   beforeAll(() => {
     app = express();
@@ -22,13 +32,17 @@ describe('Webhook Integration', () => {
 
     whatsappServiceMock = new WhatsAppService() as jest.Mocked<WhatsAppService>;
     openaiServiceMock = new OpenAIService('menu') as jest.Mocked<OpenAIService>;
-    
+    sessionStoreMock = new SessionStore() as jest.Mocked<SessionStore>;
+
     openaiServiceMock.getCompletion.mockResolvedValue('Mocked AI response');
     whatsappServiceMock.sendTextMessage.mockResolvedValue();
     whatsappServiceMock.sendPdfMessage.mockResolvedValue();
+    sessionStoreMock.getHistory.mockResolvedValue([]);
+    sessionStoreMock.getLastOrderConfirmedAt.mockResolvedValue(undefined);
+    sessionStoreMock.addMessage.mockResolvedValue();
+    sessionStoreMock.setOrderConfirmedAt.mockResolvedValue();
 
-    const sessionStore = new SessionStore();
-    const useCase = new ProcessIncomingMessageUseCase(openaiServiceMock, whatsappServiceMock, sessionStore);
+    const useCase = new ProcessIncomingMessageUseCase(openaiServiceMock, whatsappServiceMock, sessionStoreMock);
     const controller = new WebhookController('test_token', useCase);
 
     app.use('/webhook', WebhookRouter(controller));
@@ -72,10 +86,42 @@ describe('Webhook Integration', () => {
 
     expect(res.status).toBe(200);
 
-    // Give it a tiny bit of time for the delegated async work to finish
-    await new Promise(resolve => setTimeout(resolve, 50));
+    // Give the delegated async pipeline time to finish
+    await new Promise(resolve => setTimeout(resolve, 100));
 
     expect(openaiServiceMock.getCompletion).toHaveBeenCalled();
     expect(whatsappServiceMock.sendTextMessage).toHaveBeenCalledWith('999999999', 'Mocked AI response');
+  });
+
+  it('should return 200 OK and skip non-text messages', async () => {
+    const payload = {
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: '12345',
+        changes: [{
+          value: {
+            messages: [{
+              from: '999999999',
+              id: 'wamid2',
+              timestamp: '1600001',
+              type: 'image',
+              image: { id: 'img123' }
+            }]
+          },
+          field: 'messages'
+        }]
+      }]
+    };
+
+    openaiServiceMock.getCompletion.mockClear();
+
+    const res = await request(app).post('/webhook').send(payload);
+
+    expect(res.status).toBe(200);
+
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Non-text messages must not trigger the AI pipeline
+    expect(openaiServiceMock.getCompletion).not.toHaveBeenCalled();
   });
 });

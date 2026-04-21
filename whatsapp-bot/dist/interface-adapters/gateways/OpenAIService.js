@@ -5,11 +5,19 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OpenAIService = void 0;
 const openai_1 = __importDefault(require("openai"));
+const AppError_1 = require("../../errors/AppError");
+const logger_1 = require("../../utils/logger");
 class OpenAIService {
     openai;
     systemPrompt;
     constructor(menuText) {
-        this.openai = new openai_1.default({ apiKey: process.env.OPENAI_API_KEY });
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) {
+            throw new AppError_1.ConfigurationError('Missing OpenAI API key', {
+                envVar: 'OPENAI_API_KEY',
+            });
+        }
+        this.openai = new openai_1.default({ apiKey });
         this.systemPrompt = `
       Eres el recepcionista virtual de 'La Ramadita del GRINGO - Marisqueria'. Tu tono es súper amable, alegre y usas emojis (🐟🦀🍱😋🫡🙌🫶). Tu objetivo es tomar pedidos de delivery.
       Reglas:
@@ -22,6 +30,7 @@ class OpenAIService {
       4. Pídele los datos de envío: Nombre, Celular, Paga con, Dirección, Referencia.
       5. Si el cliente tiene una queja o pide hablar con un humano, indícale amablemente que por favor llame directamente al restaurante.
       6. IMPORTANTE: Respeta AL PIE DE LA LETRA las REGLAS específicas que se encuentran escritas dentro del texto del Menú (Ej: reglas de Combos, Makis, Salsas y modificaciones sugeridas).
+      7. VENTANA DE CAMBIOS: Una vez que el pedido sea "Confirmado", el cliente solo tiene 10 minutos para solicitar cambios o cancelaciones. Si el sistema te indica que han pasado más de 10 minutos, informa al cliente amable pero firmemente que el pedido ya entró a cocina y no puede modificarse.
     `;
     }
     async getCompletion(history) {
@@ -30,6 +39,9 @@ class OpenAIService {
                 { role: 'system', content: this.systemPrompt },
                 ...history
             ];
+            logger_1.logger.debug('Invoking OpenAI completion', {
+                historyLength: history.length,
+            });
             const response = await this.openai.chat.completions.create({
                 model: 'gpt-4o-mini',
                 messages: messages,
@@ -38,8 +50,12 @@ class OpenAIService {
             return response.choices[0]?.message?.content || '';
         }
         catch (error) {
-            console.error('Error invoking OpenAI:', error?.message);
-            throw error;
+            logger_1.logger.error('Error invoking OpenAI', error, {
+                historyLength: history.length,
+            });
+            throw new AppError_1.OpenAIError('Failed to generate OpenAI completion', {
+                historyLength: history.length,
+            });
         }
     }
 }
